@@ -86,6 +86,7 @@ def build_probe_url(base_url, prefix, path):
 def probe(session_url):
     """Fetch one URL. Returns (url, status_code, body_length) or raises
     requests.exceptions.RequestException on transport failure."""
+    # The five second timeout and the default requests user agent are fixed here, with no flag for either. A slow target loses probes to timeouts that look like absent paths, since a timed out probe and a refused one both come back as no outcome.
     response = requests.get(session_url, timeout=5)
     return session_url, response.status_code, len(response.content)
 
@@ -145,6 +146,7 @@ def fuzz_url(base_url, wordlist=None, extensions=None, directories=None, output_
             baseline_token = f"__baseline_absent_{uuid.uuid4().hex}__"
             baseline_url = build_probe_url(base_url, prefix, baseline_token)
             try:
+                # One baseline per prefix carries the whole level. If the absent path answer is itself unstable, a rotating error page or a load balancer with uneven backends, every real path can differ from a baseline that was never representative, or match a baseline that happened to copy it.
                 _, baseline_status, baseline_length = probe(baseline_url)
             except requests.exceptions.RequestException as e:
                 logging.error(f"Target could not be reached at {baseline_url}: {e}")
@@ -163,14 +165,17 @@ def fuzz_url(base_url, wordlist=None, extensions=None, directories=None, output_
                     continue
                 succeeded += 1
                 _, status_code, length = outcome
+                # The or matters: a real page whose error page costume matches the baseline status but not its length is found, while a real page that matches both, a tiny fixed body the same size as the catchall page, is invisible to me. Length is measured on the raw body, so a gzip difference between two responses to the same page can also trip this.
                 if status_code != baseline_status or length != baseline_length:
                     line = f"{url} - Status Code: {status_code}"
                     results.append(line)
                     logging.info(line)
                     if recursive and depth < MAX_RECURSIVE_DEPTH:
                         rel = path_by_url[url]
+                        # Only names that arrived through the directories channel, or the common list when nothing else was supplied, can be recursed into. A directory discovered through the wordlist is reported as found and then left alone, even with --recursive set, because it is not in this set.
                         if rel in directory_paths:
                             next_prefix = '/'.join(part for part in (prefix.strip('/'), rel.strip('/')) if part)
+                            # Nothing dedupes this list. A directory named both in the wordlist pass and the directories list, or found under two spellings, is queued twice, and the next depth probes its whole path set twice and can report its children twice.
                             next_prefixes.append(next_prefix)
         prefixes = next_prefixes
         depth += 1
